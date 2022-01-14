@@ -280,7 +280,7 @@ class PlotManager:
                     return
 
                 plot_filenames: Dict[Path, List[Path]] = get_plot_filenames(self.root_path)
-                plot_directories: Set[Path] = set(plot_filenames.keys())
+                # plot_directories: Set[Path] = set(plot_filenames.keys())
                 plot_paths: List[Path] = []
                 for paths in plot_filenames.values():
                     plot_paths += paths
@@ -324,8 +324,14 @@ class PlotManager:
                     for filename in filenames_to_remove:
                         del self.plot_filename_paths[filename]
 
-                for remaining, batch in list_to_batches(plot_paths, self.refresh_parameter.batch_size):
-                    batch_result: PlotRefreshResult = self.refresh_batch(batch, plot_directories)
+                pre_presessing_start: float = time.time()
+                pre_processing_results = ThreadPoolExecutor().map(self.pre_process_file, plot_paths)
+                log.debug(f"pre_processing duration: {time.time() - pre_presessing_start:.2f} seconds")
+
+                for remaining, batch in list_to_batches(
+                    list(pre_processing_results), self.refresh_parameter.batch_size
+                ):
+                    batch_result: PlotRefreshResult = self.refresh_batch(batch)
                     if not self._refreshing_enabled:
                         self.log.debug("refresh_plots: Aborted")
                         break
@@ -496,13 +502,13 @@ class PlotManager:
 
         return new_plot_info
 
-    def refresh_batch(self, plot_paths: List[Path], plot_directories: Set[Path]) -> PlotRefreshResult:
+    def refresh_batch(self, pre_processing_results) -> PlotRefreshResult:
         start_time: float = time.time()
-        result: PlotRefreshResult = PlotRefreshResult(processed=len(plot_paths))
+        result: PlotRefreshResult = PlotRefreshResult(processed=len(pre_processing_results))
         plots_refreshed: Dict[Path, PlotInfo] = {}
         new_plot_info: Optional[PlotInfo]
 
-        log.debug(f"refresh_batch: {len(plot_paths)} files in directories {plot_directories}")
+        log.debug(f"refresh_batch: {len(pre_processing_results)} files in directories")
 
         if self.match_str is not None:
             log.info(f'Only loading plots that contain "{self.match_str}" in the file or directory name')
@@ -510,10 +516,7 @@ class PlotManager:
         process_args: List[Tuple[Path, bytes]] = []
         stat_infos: Dict[Path, stat_result] = {}
         provers: Dict[Path, DiskProver] = {}
-        pre_process_start: float = time.time()
-        pre_process_results = ThreadPoolExecutor().map(self.pre_process_file, plot_paths)
-        pre_process_duration = time.time() - pre_process_start
-        for path, cache_entry, stat_info, prover in pre_process_results:
+        for path, cache_entry, stat_info, prover in pre_processing_results:
             if stat_info is not None:
                 if cache_entry is None:
                     assert prover is not None
@@ -560,7 +563,6 @@ class PlotManager:
             f"remaining {result.remaining}, batch_size {self.refresh_parameter.batch_size}, "
             f"update_plots_locked: {update_plots_locked:.2f} seconds,"
             f"update_plots_duration: {update_plots_duration:.2f} seconds, "
-            f"pre_processing: {pre_process_duration:.2f} seconds, "
             f"process_memos: {process_memos_duration:.2f} seconds, "
             f"duration: {result.duration:.2f} seconds"
         )
